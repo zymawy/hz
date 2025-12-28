@@ -5,7 +5,7 @@ server:
     readTimeout: 30s
     writeTimeout: 30s
 tunnel:
-    enabled: false
+    enabled: true
     provider: ngrok
     authtoken: ""
     region: us

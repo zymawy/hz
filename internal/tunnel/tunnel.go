@@ -7,12 +7,16 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
 	"github.com/zymawy/hz/pkg/types"
 	"golang.ngrok.com/ngrok"
 	ngrokconfig "golang.ngrok.com/ngrok/config"
+	"gopkg.in/yaml.v3"
 )
 
 // Manager handles ngrok tunnel lifecycle
@@ -26,6 +30,85 @@ type Manager struct {
 	cancel    context.CancelFunc
 	logger    *log.Logger
 	handler   http.Handler
+}
+
+// ngrokSystemConfig represents ngrok's native config structure
+type ngrokSystemConfig struct {
+	Version string `yaml:"version"`
+	Agent   struct {
+		AuthToken string `yaml:"authtoken"`
+	} `yaml:"agent"`
+	// v2 format
+	AuthToken string `yaml:"authtoken"`
+	Tunnels   map[string]struct {
+		Domain string `yaml:"domain"`
+	} `yaml:"tunnels"`
+}
+
+// getNgrokConfigPaths returns possible ngrok config file locations
+func getNgrokConfigPaths() []string {
+	home, _ := os.UserHomeDir()
+	paths := []string{}
+
+	switch runtime.GOOS {
+	case "darwin":
+		// macOS: ngrok v3 location
+		paths = append(paths, filepath.Join(home, "Library", "Application Support", "ngrok", "ngrok.yml"))
+	case "linux":
+		// Linux: XDG config
+		if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+			paths = append(paths, filepath.Join(xdg, "ngrok", "ngrok.yml"))
+		}
+		paths = append(paths, filepath.Join(home, ".config", "ngrok", "ngrok.yml"))
+	case "windows":
+		// Windows
+		if appData := os.Getenv("APPDATA"); appData != "" {
+			paths = append(paths, filepath.Join(appData, "ngrok", "ngrok.yml"))
+		}
+	}
+
+	// Common fallback: ngrok v2 location
+	paths = append(paths, filepath.Join(home, ".ngrok2", "ngrok.yml"))
+
+	return paths
+}
+
+// LoadSystemNgrokConfig attempts to load ngrok config from system locations
+func LoadSystemNgrokConfig() (authToken, domain string, err error) {
+	paths := getNgrokConfigPaths()
+
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+
+		var cfg ngrokSystemConfig
+		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			continue
+		}
+
+		// Get auth token (v3 uses agent.authtoken, v2 uses authtoken)
+		if cfg.Agent.AuthToken != "" {
+			authToken = cfg.Agent.AuthToken
+		} else if cfg.AuthToken != "" {
+			authToken = cfg.AuthToken
+		}
+
+		// Get domain from tunnels if available
+		for _, tunnel := range cfg.Tunnels {
+			if tunnel.Domain != "" {
+				domain = tunnel.Domain
+				break
+			}
+		}
+
+		if authToken != "" {
+			return authToken, domain, nil
+		}
+	}
+
+	return "", "", fmt.Errorf("no ngrok config found in system locations")
 }
 
 // New creates a new tunnel manager
@@ -53,19 +136,38 @@ func (m *Manager) Start(handler http.Handler) error {
 
 	m.handler = handler
 
+	// Auto-detect ngrok credentials if not configured
+	authToken := m.config.AuthToken
+	domain := m.config.Domain
+
+	if authToken == "" {
+		m.logger.Println("[tunnel] No auth token in config, checking system ngrok config...")
+		if sysToken, sysDomain, err := LoadSystemNgrokConfig(); err == nil {
+			authToken = sysToken
+			m.logger.Println("[tunnel] Found ngrok auth token in system config")
+			// Use system domain if not set in hz config
+			if domain == "" && sysDomain != "" {
+				domain = sysDomain
+				m.logger.Printf("[tunnel] Using system domain: %s", domain)
+			}
+		} else {
+			return fmt.Errorf("no ngrok auth token configured and none found in system: %w\n\nRun 'ngrok config add-authtoken <token>' or 'hz tunnel --token <token>'", err)
+		}
+	}
+
 	// Build ngrok options
 	opts := []ngrokconfig.HTTPEndpointOption{}
 
 	// Add custom domain if configured
-	if m.config.Domain != "" {
-		opts = append(opts, ngrokconfig.WithDomain(m.config.Domain))
+	if domain != "" {
+		opts = append(opts, ngrokconfig.WithDomain(domain))
 	}
 
 	// Create listener
 	var err error
 	m.listener, err = ngrok.Listen(m.ctx,
 		ngrokconfig.HTTPEndpoint(opts...),
-		ngrok.WithAuthtoken(m.config.AuthToken),
+		ngrok.WithAuthtoken(authToken),
 	)
 	if err != nil {
 		m.status.Error = err.Error()
