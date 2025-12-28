@@ -14,10 +14,29 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/zymawy/hz/internal/inspector"
 	"github.com/zymawy/hz/internal/registry"
 	"github.com/zymawy/hz/internal/router"
 	"github.com/zymawy/hz/pkg/types"
 )
+
+// responseCapture wraps ResponseWriter to capture status code
+type responseCapture struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (rc *responseCapture) WriteHeader(code int) {
+	rc.statusCode = code
+	rc.ResponseWriter.WriteHeader(code)
+}
+
+func (rc *responseCapture) Write(b []byte) (int, error) {
+	if rc.statusCode == 0 {
+		rc.statusCode = http.StatusOK
+	}
+	return rc.ResponseWriter.Write(b)
+}
 
 // ErrorHandler is called when proxy encounters an error
 type ErrorHandler func(w http.ResponseWriter, r *http.Request, err error)
@@ -32,6 +51,7 @@ type Proxy struct {
 	stats        *types.ProxyStats
 	statsMu      sync.RWMutex
 	logger       *log.Logger
+	inspector    *inspector.Inspector
 }
 
 // New creates a new proxy instance
@@ -76,6 +96,7 @@ func New(reg *registry.Registry, rtr *router.Router) *Proxy {
 
 // ServeHTTP handles incoming HTTP requests
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 	atomic.AddInt64(&p.stats.TotalRequests, 1)
 	atomic.AddInt64(&p.stats.ActiveRequests, 1)
 	defer atomic.AddInt64(&p.stats.ActiveRequests, -1)
@@ -89,11 +110,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Route the request
 	route, err := p.router.Match(r)
 	if err != nil {
+		p.captureRequest(r, nil, 0, time.Since(start), err)
 		p.errorHandler(w, r, err)
 		return
 	}
 
 	if route == nil {
+		p.captureRequest(r, nil, 0, time.Since(start), fmt.Errorf("no matching route found"))
 		p.errorHandler(w, r, fmt.Errorf("no matching route found"))
 		return
 	}
@@ -107,8 +130,45 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Apply URL rewriting if configured
 	router.RewriteURL(r, route.Service.Rewrite)
 
+	// Wrap response writer to capture status code
+	rc := &responseCapture{ResponseWriter: w}
+
 	// Proxy the request
-	p.reverseProxy.ServeHTTP(w, r)
+	p.reverseProxy.ServeHTTP(rc, r)
+
+	// Capture the request for inspector
+	p.captureRequest(r, route, rc.statusCode, time.Since(start), nil)
+}
+
+// captureRequest sends request info to the inspector if enabled
+func (p *Proxy) captureRequest(r *http.Request, route *types.Route, statusCode int, duration time.Duration, err error) {
+	if p.inspector == nil {
+		return
+	}
+
+	req := inspector.Request{
+		Timestamp:     time.Now(),
+		Method:        r.Method,
+		Path:          r.URL.Path,
+		Host:          r.Host,
+		Headers:       r.Header,
+		Query:         r.URL.RawQuery,
+		ContentLength: r.ContentLength,
+		RemoteAddr:    r.RemoteAddr,
+		StatusCode:    statusCode,
+		Duration:      duration,
+	}
+
+	if route != nil {
+		req.Service = route.Service.Name
+		req.Target = route.Service.Target
+	}
+
+	if err != nil {
+		req.Error = err.Error()
+	}
+
+	p.inspector.Capture(req)
 }
 
 // HandleWebSocket handles WebSocket upgrade requests
@@ -273,6 +333,11 @@ func (p *Proxy) SetErrorHandler(fn ErrorHandler) {
 // SetLogger sets the logger for the proxy
 func (p *Proxy) SetLogger(logger *log.Logger) {
 	p.logger = logger
+}
+
+// SetInspector sets the request inspector
+func (p *Proxy) SetInspector(insp *inspector.Inspector) {
+	p.inspector = insp
 }
 
 // Stats returns current proxy statistics
