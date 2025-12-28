@@ -28,6 +28,13 @@ type Request struct {
 	Duration      time.Duration       `json:"duration"`
 	DurationMs    float64             `json:"duration_ms"`
 	Error         string              `json:"error,omitempty"`
+
+	// Enhanced fields for detailed inspection
+	RequestBody     string              `json:"request_body,omitempty"`
+	ResponseBody    string              `json:"response_body,omitempty"`
+	ResponseHeaders map[string][]string `json:"response_headers,omitempty"`
+	ContentType     string              `json:"content_type,omitempty"`
+	Scheme          string              `json:"scheme,omitempty"`
 }
 
 // Inspector captures and displays HTTP requests
@@ -99,6 +106,7 @@ func (i *Inspector) Start() error {
 	mux.HandleFunc("/api/requests", i.handleRequests)
 	mux.HandleFunc("/api/requests/sse", i.handleSSE)
 	mux.HandleFunc("/api/requests/clear", i.handleClear)
+	mux.HandleFunc("/api/request/", i.handleRequestDetail)
 
 	addr := fmt.Sprintf("127.0.0.1:%d", i.port)
 	i.server = &http.Server{
@@ -204,210 +212,431 @@ func (i *Inspector) handleClear(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"cleared"}`))
 }
 
+// handleRequestDetail returns a single request by ID
+func (i *Inspector) handleRequestDetail(w http.ResponseWriter, r *http.Request) {
+	// Extract ID from path: /api/request/{id}
+	id := r.URL.Path[len("/api/request/"):]
+	if id == "" {
+		http.Error(w, "Request ID required", http.StatusBadRequest)
+		return
+	}
+
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+
+	for _, req := range i.requests {
+		if req.ID == id {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(req)
+			return
+		}
+	}
+
+	http.Error(w, "Request not found", http.StatusNotFound)
+}
+
 const inspectorHTML = `<!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>hz Inspector</title>
+    <!-- DaisyUI CSS (must load before Tailwind) -->
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.14/dist/full.min.css" rel="stylesheet" type="text/css" />
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    }
+                }
+            }
+        }
+    </script>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-            background: #0d1117;
-            color: #c9d1d9;
-            line-height: 1.5;
+        /* Custom scrollbar */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: oklch(0.3 0 0); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: oklch(0.4 0 0); }
+
+        /* Live pulse animation */
+        @keyframes pulse-live {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.6; transform: scale(0.95); }
         }
-        .header {
-            background: #161b22;
-            border-bottom: 1px solid #30363d;
-            padding: 16px 24px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-        .logo {
-            font-size: 24px;
-            font-weight: 700;
-            color: #58a6ff;
-        }
-        .logo span { color: #8b949e; font-weight: 400; }
-        .actions { display: flex; gap: 12px; }
-        .btn {
-            background: #21262d;
-            border: 1px solid #30363d;
-            color: #c9d1d9;
-            padding: 8px 16px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 14px;
-            transition: all 0.2s;
-        }
-        .btn:hover { background: #30363d; }
-        .btn-danger { border-color: #f85149; color: #f85149; }
-        .btn-danger:hover { background: #f8514922; }
-        .container { padding: 24px; }
-        .stats {
-            display: flex;
-            gap: 24px;
-            margin-bottom: 24px;
-        }
-        .stat {
-            background: #161b22;
-            border: 1px solid #30363d;
-            border-radius: 8px;
-            padding: 16px 24px;
-        }
-        .stat-value { font-size: 32px; font-weight: 700; color: #58a6ff; }
-        .stat-label { color: #8b949e; font-size: 14px; }
-        .requests-table {
-            width: 100%;
-            border-collapse: collapse;
-            background: #161b22;
-            border-radius: 8px;
-            overflow: hidden;
-            border: 1px solid #30363d;
-        }
-        .requests-table th {
-            background: #21262d;
-            text-align: left;
-            padding: 12px 16px;
-            font-weight: 600;
-            color: #8b949e;
-            font-size: 12px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        .requests-table td {
-            padding: 12px 16px;
-            border-top: 1px solid #21262d;
-            font-size: 14px;
-        }
-        .requests-table tr:hover td { background: #1c2128; }
-        .method {
-            font-weight: 600;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-size: 12px;
-        }
-        .method-GET { background: #238636; color: white; }
-        .method-POST { background: #1f6feb; color: white; }
-        .method-PUT { background: #9e6a03; color: white; }
-        .method-DELETE { background: #da3633; color: white; }
-        .method-PATCH { background: #8957e5; color: white; }
-        .status { font-weight: 600; }
-        .status-2xx { color: #3fb950; }
-        .status-3xx { color: #58a6ff; }
-        .status-4xx { color: #d29922; }
-        .status-5xx { color: #f85149; }
-        .service {
-            background: #30363d;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-size: 12px;
-        }
-        .duration { color: #8b949e; font-family: monospace; }
-        .path { font-family: monospace; color: #c9d1d9; }
-        .empty {
-            text-align: center;
-            padding: 48px;
-            color: #8b949e;
-        }
-        .live-indicator {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            color: #3fb950;
-            font-size: 14px;
-        }
-        .live-dot {
-            width: 8px;
-            height: 8px;
-            background: #3fb950;
-            border-radius: 50%;
-            animation: pulse 2s infinite;
-        }
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-        .time { color: #8b949e; font-size: 12px; font-family: monospace; }
+        .animate-pulse-live { animation: pulse-live 2s infinite; }
+
+        /* Method badge colors */
+        .method-GET { --tw-bg-opacity: 0.2; background-color: oklch(0.723 0.191 142.5 / 0.2); color: oklch(0.723 0.191 142.5); }
+        .method-POST { --tw-bg-opacity: 0.2; background-color: oklch(0.623 0.214 259.815 / 0.2); color: oklch(0.623 0.214 259.815); }
+        .method-PUT { --tw-bg-opacity: 0.2; background-color: oklch(0.768 0.165 75.834 / 0.2); color: oklch(0.768 0.165 75.834); }
+        .method-DELETE { --tw-bg-opacity: 0.2; background-color: oklch(0.704 0.191 22.216 / 0.2); color: oklch(0.704 0.191 22.216); }
+        .method-PATCH { --tw-bg-opacity: 0.2; background-color: oklch(0.702 0.183 293.541 / 0.2); color: oklch(0.702 0.183 293.541); }
+
+        /* Status colors */
+        .status-2xx { color: oklch(0.723 0.191 142.5); }
+        .status-3xx { color: oklch(0.623 0.214 259.815); }
+        .status-4xx { color: oklch(0.768 0.165 75.834); }
+        .status-5xx { color: oklch(0.704 0.191 22.216); }
+
+        /* Selected row */
+        .row-selected { background-color: oklch(0.646 0.222 41.116 / 0.1) !important; }
     </style>
 </head>
-<body>
-    <div class="header">
-        <div class="logo">hz <span>inspector</span></div>
-        <div class="actions">
-            <div class="live-indicator">
-                <div class="live-dot"></div>
+<body class="bg-base-100 text-base-content font-sans antialiased">
+    <!-- Navbar -->
+    <div class="navbar bg-base-200 border-b border-base-300 sticky top-0 z-50 backdrop-blur-md px-6">
+        <div class="flex-1">
+            <div class="flex items-center gap-2">
+                <div class="w-8 h-8 rounded-lg bg-primary flex items-center justify-center text-primary-content font-bold text-sm">Hz</div>
+                <span class="text-xl font-semibold text-base-content/70">Inspector</span>
+            </div>
+        </div>
+        <div class="flex-none gap-3">
+            <div class="flex items-center gap-2 text-success text-sm font-medium">
+                <span class="w-2 h-2 rounded-full bg-success animate-pulse-live"></span>
                 Live
             </div>
-            <button class="btn btn-danger" onclick="clearRequests()">Clear</button>
+            <button class="btn btn-outline btn-error btn-sm gap-2" onclick="clearRequests()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
+                Clear All
+            </button>
         </div>
     </div>
-    <div class="container">
-        <div class="stats">
-            <div class="stat">
-                <div class="stat-value" id="total-count">0</div>
-                <div class="stat-label">Total Requests</div>
-            </div>
-            <div class="stat">
-                <div class="stat-value" id="avg-duration">0ms</div>
-                <div class="stat-label">Avg Duration</div>
-            </div>
-            <div class="stat">
-                <div class="stat-value" id="error-count">0</div>
-                <div class="stat-label">Errors (4xx/5xx)</div>
+
+    <!-- Main Layout -->
+    <div class="flex h-[calc(100vh-64px)]">
+        <!-- Requests Panel -->
+        <div class="flex-1 overflow-auto border-r border-base-300" id="requests-panel-container">
+            <div class="p-6">
+                <!-- Stats -->
+                <div class="stats stats-horizontal shadow-lg w-full mb-6 bg-base-200">
+                    <div class="stat">
+                        <div class="stat-title">Total Requests</div>
+                        <div class="stat-value text-primary" id="total-count">0</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-title">Avg Duration</div>
+                        <div class="stat-value text-secondary" id="avg-duration">0ms</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-title">Errors (4xx/5xx)</div>
+                        <div class="stat-value text-error" id="error-count">0</div>
+                    </div>
+                </div>
+
+                <!-- Requests Table -->
+                <div class="card bg-base-200 shadow-lg">
+                    <div class="overflow-x-auto">
+                        <table class="table table-zebra">
+                            <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Method</th>
+                                    <th>Path</th>
+                                    <th>Service</th>
+                                    <th>Status</th>
+                                    <th>Duration</th>
+                                </tr>
+                            </thead>
+                            <tbody id="requests-body">
+                                <tr>
+                                    <td colspan="6" class="text-center py-16 text-base-content/50">
+                                        <svg class="w-12 h-12 mx-auto mb-4 opacity-50" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="10"/></svg>
+                                        <div class="text-lg">Waiting for requests...</div>
+                                        <div class="text-sm mt-2">Make HTTP requests through the proxy to see them here</div>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
         </div>
-        <table class="requests-table">
-            <thead>
-                <tr>
-                    <th>Time</th>
-                    <th>Method</th>
-                    <th>Path</th>
-                    <th>Service</th>
-                    <th>Status</th>
-                    <th>Duration</th>
-                </tr>
-            </thead>
-            <tbody id="requests-body">
-                <tr class="empty"><td colspan="6">Waiting for requests...</td></tr>
-            </tbody>
-        </table>
+
+        <!-- Detail Panel -->
+        <div class="w-[55%] h-full overflow-auto bg-base-100 hidden" id="detail-panel">
+            <!-- Detail Header -->
+            <div class="sticky top-0 z-10 bg-base-200 border-b border-base-300 px-6 py-4 flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                    <span class="badge badge-lg font-semibold" id="detail-method">GET</span>
+                    <span class="font-mono text-base-content/70" id="detail-path">/api/endpoint</span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button class="btn btn-primary btn-sm gap-2" onclick="showCurlModal()">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                        Copy as cURL
+                    </button>
+                    <button class="btn btn-ghost btn-sm btn-square" onclick="closeDetail()">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Tabs -->
+            <div role="tablist" class="tabs tabs-bordered bg-base-200 sticky top-[73px] z-10 px-6">
+                <input type="radio" name="detail-tabs" role="tab" class="tab" aria-label="Overview" checked data-tab="overview" />
+                <input type="radio" name="detail-tabs" role="tab" class="tab" aria-label="Headers" data-tab="headers" />
+                <input type="radio" name="detail-tabs" role="tab" class="tab" aria-label="Parameters" data-tab="params" />
+                <input type="radio" name="detail-tabs" role="tab" class="tab" aria-label="Request Body" data-tab="request" />
+                <input type="radio" name="detail-tabs" role="tab" class="tab" aria-label="Response" data-tab="response" />
+            </div>
+
+            <!-- Overview Tab -->
+            <div class="p-6 tab-panel" id="tab-overview">
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="bg-base-200 p-4 rounded-lg border border-base-300">
+                        <div class="text-xs text-base-content/50 uppercase tracking-wider font-semibold mb-1">URL</div>
+                        <div class="font-mono text-sm break-all" id="info-url">-</div>
+                    </div>
+                    <div class="bg-base-200 p-4 rounded-lg border border-base-300">
+                        <div class="text-xs text-base-content/50 uppercase tracking-wider font-semibold mb-1">Status</div>
+                        <div class="font-mono text-sm" id="info-status">-</div>
+                    </div>
+                    <div class="bg-base-200 p-4 rounded-lg border border-base-300">
+                        <div class="text-xs text-base-content/50 uppercase tracking-wider font-semibold mb-1">Duration</div>
+                        <div class="font-mono text-sm" id="info-duration">-</div>
+                    </div>
+                    <div class="bg-base-200 p-4 rounded-lg border border-base-300">
+                        <div class="text-xs text-base-content/50 uppercase tracking-wider font-semibold mb-1">Service</div>
+                        <div class="font-mono text-sm" id="info-service">-</div>
+                    </div>
+                    <div class="bg-base-200 p-4 rounded-lg border border-base-300">
+                        <div class="text-xs text-base-content/50 uppercase tracking-wider font-semibold mb-1">Target</div>
+                        <div class="font-mono text-sm break-all" id="info-target">-</div>
+                    </div>
+                    <div class="bg-base-200 p-4 rounded-lg border border-base-300">
+                        <div class="text-xs text-base-content/50 uppercase tracking-wider font-semibold mb-1">Remote Address</div>
+                        <div class="font-mono text-sm" id="info-remote">-</div>
+                    </div>
+                    <div class="bg-base-200 p-4 rounded-lg border border-base-300">
+                        <div class="text-xs text-base-content/50 uppercase tracking-wider font-semibold mb-1">Content Type</div>
+                        <div class="font-mono text-sm" id="info-content-type">-</div>
+                    </div>
+                    <div class="bg-base-200 p-4 rounded-lg border border-base-300">
+                        <div class="text-xs text-base-content/50 uppercase tracking-wider font-semibold mb-1">Timestamp</div>
+                        <div class="font-mono text-sm" id="info-timestamp">-</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Headers Tab -->
+            <div class="p-6 tab-panel hidden" id="tab-headers">
+                <div class="mb-6">
+                    <div class="flex items-center justify-between mb-3">
+                        <span class="text-xs text-base-content/50 uppercase tracking-wider font-semibold">Request Headers</span>
+                        <button class="btn btn-ghost btn-xs gap-1" onclick="copySection('request-headers')">
+                            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/></svg>
+                            Copy
+                        </button>
+                    </div>
+                    <div class="overflow-x-auto rounded-lg border border-base-300">
+                        <table class="table table-sm" id="request-headers-table">
+                            <thead class="bg-base-300">
+                                <tr>
+                                    <th class="text-xs uppercase tracking-wider">Name</th>
+                                    <th class="text-xs uppercase tracking-wider">Value</th>
+                                </tr>
+                            </thead>
+                            <tbody id="request-headers" class="font-mono text-sm"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div>
+                    <div class="flex items-center justify-between mb-3">
+                        <span class="text-xs text-base-content/50 uppercase tracking-wider font-semibold">Response Headers</span>
+                        <button class="btn btn-ghost btn-xs gap-1" onclick="copySection('response-headers')">
+                            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/></svg>
+                            Copy
+                        </button>
+                    </div>
+                    <div class="overflow-x-auto rounded-lg border border-base-300">
+                        <table class="table table-sm" id="response-headers-table">
+                            <thead class="bg-base-300">
+                                <tr>
+                                    <th class="text-xs uppercase tracking-wider">Name</th>
+                                    <th class="text-xs uppercase tracking-wider">Value</th>
+                                </tr>
+                            </thead>
+                            <tbody id="response-headers" class="font-mono text-sm"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Parameters Tab -->
+            <div class="p-6 tab-panel hidden" id="tab-params">
+                <div class="flex items-center justify-between mb-3">
+                    <span class="text-xs text-base-content/50 uppercase tracking-wider font-semibold">Query Parameters</span>
+                    <button class="btn btn-ghost btn-xs gap-1" onclick="copySection('query-params')">
+                        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/></svg>
+                        Copy
+                    </button>
+                </div>
+                <div class="overflow-x-auto rounded-lg border border-base-300">
+                    <table class="table table-sm" id="query-params-table">
+                        <thead class="bg-base-300">
+                            <tr>
+                                <th class="text-xs uppercase tracking-wider">Name</th>
+                                <th class="text-xs uppercase tracking-wider">Value</th>
+                            </tr>
+                        </thead>
+                        <tbody id="query-params" class="font-mono text-sm"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Request Body Tab -->
+            <div class="p-6 tab-panel hidden" id="tab-request">
+                <div class="flex items-center justify-between mb-3">
+                    <span class="text-xs text-base-content/50 uppercase tracking-wider font-semibold">Request Body</span>
+                    <button class="btn btn-ghost btn-xs gap-1" onclick="copySection('request-body')">
+                        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/></svg>
+                        Copy
+                    </button>
+                </div>
+                <div class="mockup-code bg-base-300 max-h-96 overflow-auto">
+                    <pre id="request-body" class="px-4 py-2 text-sm"><code class="text-base-content/50 italic">No request body</code></pre>
+                </div>
+            </div>
+
+            <!-- Response Tab -->
+            <div class="p-6 tab-panel hidden" id="tab-response">
+                <div class="flex items-center justify-between mb-3">
+                    <span class="text-xs text-base-content/50 uppercase tracking-wider font-semibold">Response Body</span>
+                    <button class="btn btn-ghost btn-xs gap-1" onclick="copySection('response-body')">
+                        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/></svg>
+                        Copy
+                    </button>
+                </div>
+                <div class="mockup-code bg-base-300 max-h-96 overflow-auto">
+                    <pre id="response-body" class="px-4 py-2 text-sm"><code class="text-base-content/50 italic">No response body</code></pre>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- cURL Modal using DaisyUI dialog -->
+    <dialog id="curl-modal" class="modal">
+        <div class="modal-box max-w-2xl">
+            <h3 class="text-lg font-bold mb-4">cURL Command</h3>
+            <div class="mockup-code bg-base-300 max-h-80 overflow-auto">
+                <pre id="curl-command" class="px-4 py-2 text-sm whitespace-pre-wrap break-all"></pre>
+            </div>
+            <div class="modal-action">
+                <button class="btn btn-ghost" onclick="document.getElementById('curl-modal').close()">Close</button>
+                <button class="btn btn-primary gap-2" onclick="copyCurl()">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/></svg>
+                    Copy to Clipboard
+                </button>
+            </div>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+
+    <!-- Toast container using DaisyUI -->
+    <div class="toast toast-end" id="toast-container">
+        <div class="alert alert-success hidden" id="toast-alert">
+            <span id="toast-message">Copied!</span>
+        </div>
     </div>
 
     <script>
         let requests = [];
+        let selectedRequest = null;
 
         function formatTime(timestamp) {
             const d = new Date(timestamp);
             return d.toLocaleTimeString();
         }
 
+        function formatFullTime(timestamp) {
+            const d = new Date(timestamp);
+            return d.toLocaleString();
+        }
+
         function getStatusClass(code) {
-            if (code >= 200 && code < 300) return 'status-2xx';
-            if (code >= 300 && code < 400) return 'status-3xx';
-            if (code >= 400 && code < 500) return 'status-4xx';
-            return 'status-5xx';
+            if (code >= 200 && code < 300) return 'badge-success';
+            if (code >= 300 && code < 400) return 'badge-info';
+            if (code >= 400 && code < 500) return 'badge-warning';
+            return 'badge-error';
+        }
+
+        function parseQueryString(query) {
+            if (!query) return {};
+            const params = {};
+            query.split('&').forEach(pair => {
+                const [key, value] = pair.split('=').map(decodeURIComponent);
+                if (key) params[key] = value || '';
+            });
+            return params;
+        }
+
+        function formatHeaders(headers) {
+            if (!headers) return {};
+            const result = {};
+            for (const [key, values] of Object.entries(headers)) {
+                result[key] = Array.isArray(values) ? values.join(', ') : values;
+            }
+            return result;
+        }
+
+        function formatJSON(str) {
+            try {
+                const obj = JSON.parse(str);
+                return JSON.stringify(obj, null, 2);
+            } catch {
+                return str;
+            }
+        }
+
+        function isJSON(str) {
+            try {
+                JSON.parse(str);
+                return true;
+            } catch {
+                return false;
+            }
+        }
+
+        function getMethodClass(method) {
+            const classes = {
+                'GET': 'badge-info',
+                'POST': 'badge-success',
+                'PUT': 'badge-warning',
+                'PATCH': 'badge-warning',
+                'DELETE': 'badge-error',
+                'OPTIONS': 'badge-ghost',
+                'HEAD': 'badge-ghost'
+            };
+            return classes[method] || 'badge-ghost';
         }
 
         function renderRequests() {
             const tbody = document.getElementById('requests-body');
 
             if (requests.length === 0) {
-                tbody.innerHTML = '<tr class="empty"><td colspan="6">Waiting for requests...</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="6" class="text-center text-base-content/50 py-8">Waiting for requests...</td></tr>';
                 return;
             }
 
             tbody.innerHTML = requests.map(req => ` + "`" + `
-                <tr>
-                    <td class="time">${formatTime(req.timestamp)}</td>
-                    <td><span class="method method-${req.method}">${req.method}</span></td>
-                    <td class="path">${req.path}${req.query ? '?' + req.query : ''}</td>
-                    <td><span class="service">${req.service || 'unknown'}</span> → ${req.target || ''}</td>
-                    <td><span class="status ${getStatusClass(req.status_code)}">${req.status_code || '-'}</span></td>
-                    <td class="duration">${req.duration_ms ? req.duration_ms.toFixed(1) + 'ms' : '-'}</td>
+                <tr onclick="selectRequest('${req.id}')" class="hover cursor-pointer ${selectedRequest && selectedRequest.id === req.id ? 'bg-primary/10' : ''}">
+                    <td class="font-mono text-sm opacity-70">${formatTime(req.timestamp)}</td>
+                    <td><span class="badge badge-sm ${getMethodClass(req.method)}">${req.method}</span></td>
+                    <td class="font-mono text-sm max-w-xs truncate" title="${req.path}${req.query ? '?' + req.query : ''}">${req.path}${req.query ? '?' + req.query : ''}</td>
+                    <td><span class="badge badge-sm badge-outline">${req.service || 'unknown'}</span></td>
+                    <td><span class="badge badge-sm ${getStatusClass(req.status_code)}">${req.status_code || '-'}</span></td>
+                    <td class="font-mono text-sm">${req.duration_ms ? req.duration_ms.toFixed(1) + 'ms' : '-'}</td>
                 </tr>
             ` + "`" + `).join('');
 
@@ -424,10 +653,216 @@ const inspectorHTML = `<!DOCTYPE html>
             document.getElementById('error-count').textContent = errors;
         }
 
+        function selectRequest(id) {
+            const req = requests.find(r => r.id === id);
+            if (!req) return;
+
+            selectedRequest = req;
+            renderRequests();
+            showDetail(req);
+        }
+
+        function showDetail(req) {
+            const panel = document.getElementById('detail-panel');
+            panel.classList.remove('hidden');
+
+            // Header
+            const methodEl = document.getElementById('detail-method');
+            methodEl.textContent = req.method;
+            methodEl.className = 'badge badge-lg ' + getMethodClass(req.method);
+            document.getElementById('detail-path').textContent = req.path + (req.query ? '?' + req.query : '');
+
+            // Overview
+            const scheme = req.scheme || 'http';
+            document.getElementById('info-url').textContent = scheme + '://' + req.host + req.path + (req.query ? '?' + req.query : '');
+            document.getElementById('info-status').innerHTML = '<span class="badge ' + getStatusClass(req.status_code) + '">' + (req.status_code || '-') + '</span>';
+            document.getElementById('info-duration').textContent = req.duration_ms ? req.duration_ms.toFixed(2) + 'ms' : '-';
+            document.getElementById('info-service').textContent = req.service || '-';
+            document.getElementById('info-target').textContent = req.target || '-';
+            document.getElementById('info-remote').textContent = req.remote_addr || '-';
+            document.getElementById('info-content-type').textContent = req.content_type || '-';
+            document.getElementById('info-timestamp').textContent = formatFullTime(req.timestamp);
+
+            // Request Headers
+            const reqHeaders = formatHeaders(req.headers);
+            document.getElementById('request-headers').innerHTML = Object.entries(reqHeaders)
+                .map(([k, v]) => '<tr><td class="font-semibold text-primary">' + escapeHtml(k) + '</td><td class="font-mono text-sm">' + escapeHtml(v) + '</td></tr>')
+                .join('') || '<tr><td colspan="2" class="text-center text-base-content/50">No headers</td></tr>';
+
+            // Response Headers
+            const resHeaders = formatHeaders(req.response_headers);
+            document.getElementById('response-headers').innerHTML = Object.entries(resHeaders)
+                .map(([k, v]) => '<tr><td class="font-semibold text-primary">' + escapeHtml(k) + '</td><td class="font-mono text-sm">' + escapeHtml(v) + '</td></tr>')
+                .join('') || '<tr><td colspan="2" class="text-center text-base-content/50">No headers</td></tr>';
+
+            // Query Parameters
+            const params = parseQueryString(req.query);
+            document.getElementById('query-params').innerHTML = Object.entries(params)
+                .map(([k, v]) => '<tr><td class="font-semibold text-primary">' + escapeHtml(k) + '</td><td class="font-mono text-sm">' + escapeHtml(v) + '</td></tr>')
+                .join('') || '<tr><td colspan="2" class="text-center text-base-content/50">No query parameters</td></tr>';
+
+            // Request Body
+            const reqBody = req.request_body || '';
+            if (reqBody) {
+                const formatted = isJSON(reqBody) ? formatJSON(reqBody) : reqBody;
+                document.getElementById('request-body').textContent = formatted;
+            } else {
+                document.getElementById('request-body').textContent = 'No request body';
+            }
+
+            // Response Body
+            const resBody = req.response_body || '';
+            if (resBody) {
+                const formatted = isJSON(resBody) ? formatJSON(resBody) : resBody;
+                document.getElementById('response-body').textContent = formatted;
+            } else {
+                document.getElementById('response-body').textContent = 'No response body';
+            }
+
+            // Reset to first tab
+            switchTab('overview');
+        }
+
+        function closeDetail() {
+            document.getElementById('detail-panel').classList.add('hidden');
+            selectedRequest = null;
+            renderRequests();
+        }
+
+        function switchTab(tabName) {
+            // Hide all tab contents
+            document.querySelectorAll('.tab-panel').forEach(c => c.classList.add('hidden'));
+            // Show selected tab content
+            const tabContent = document.getElementById('tab-' + tabName);
+            if (tabContent) tabContent.classList.remove('hidden');
+            // Update radio button
+            const radio = document.querySelector('input[name="detail-tabs"][data-tab="' + tabName + '"]');
+            if (radio) radio.checked = true;
+        }
+
+        // Tab click handlers for DaisyUI radio tabs
+        document.querySelectorAll('input[name="detail-tabs"]').forEach(radio => {
+            radio.addEventListener('change', () => switchTab(radio.dataset.tab));
+        });
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        function showToast(message) {
+            const toast = document.getElementById('toast-alert');
+            const toastMsg = document.getElementById('toast-message');
+            toastMsg.textContent = message;
+            toast.classList.remove('hidden');
+            setTimeout(() => toast.classList.add('hidden'), 2000);
+        }
+
+        function copySection(section) {
+            if (!selectedRequest) return;
+
+            let text = '';
+            const req = selectedRequest;
+
+            switch(section) {
+                case 'request-headers':
+                    const reqH = formatHeaders(req.headers);
+                    text = Object.entries(reqH).map(([k, v]) => k + ': ' + v).join('\n');
+                    break;
+                case 'response-headers':
+                    const resH = formatHeaders(req.response_headers);
+                    text = Object.entries(resH).map(([k, v]) => k + ': ' + v).join('\n');
+                    break;
+                case 'query-params':
+                    const params = parseQueryString(req.query);
+                    text = Object.entries(params).map(([k, v]) => k + '=' + v).join('\n');
+                    break;
+                case 'request-body':
+                    text = req.request_body || '';
+                    if (isJSON(text)) text = formatJSON(text);
+                    break;
+                case 'response-body':
+                    text = req.response_body || '';
+                    if (isJSON(text)) text = formatJSON(text);
+                    break;
+            }
+
+            navigator.clipboard.writeText(text).then(() => {
+                showToast('Copied to clipboard!');
+            });
+        }
+
+        function generateCurl() {
+            if (!selectedRequest) return '';
+
+            const req = selectedRequest;
+            const scheme = req.scheme || 'http';
+            const url = scheme + '://' + req.host + req.path + (req.query ? '?' + req.query : '');
+
+            let curl = 'curl';
+
+            // Method
+            if (req.method !== 'GET') {
+                curl += ' -X ' + req.method;
+            }
+
+            // URL
+            curl += " '" + url + "'";
+
+            // Headers
+            const headers = formatHeaders(req.headers);
+            for (const [key, value] of Object.entries(headers)) {
+                // Skip some headers that curl handles automatically
+                if (['Host', 'Content-Length', 'Accept-Encoding'].includes(key)) continue;
+                curl += " \\\n  -H '" + key + ": " + value.replace(/'/g, "'\\''") + "'";
+            }
+
+            // Body
+            if (req.request_body) {
+                const body = req.request_body.replace(/'/g, "'\\''");
+                curl += " \\\n  -d '" + body + "'";
+            }
+
+            return curl;
+        }
+
+        function showCurlModal() {
+            const curl = generateCurl();
+            document.getElementById('curl-command').textContent = curl;
+            document.getElementById('curl-modal').showModal();
+        }
+
+        function closeCurlModal() {
+            document.getElementById('curl-modal').close();
+        }
+
+        function copyCurl() {
+            const curl = generateCurl();
+            navigator.clipboard.writeText(curl).then(() => {
+                showToast('cURL command copied!');
+                closeCurlModal();
+            });
+        }
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                if (document.getElementById('curl-modal').open) {
+                    closeCurlModal();
+                } else if (selectedRequest) {
+                    closeDetail();
+                }
+            }
+        });
+
         function clearRequests() {
             fetch('/api/requests/clear', { method: 'POST' })
                 .then(() => {
                     requests = [];
+                    selectedRequest = null;
+                    document.getElementById('detail-panel').classList.add('hidden');
                     renderRequests();
                 });
         }
@@ -436,7 +871,6 @@ const inspectorHTML = `<!DOCTYPE html>
         const evtSource = new EventSource('/api/requests/sse');
         evtSource.onmessage = (event) => {
             const req = JSON.parse(event.data);
-            // Check if request already exists (initial load vs new)
             const exists = requests.some(r => r.id === req.id);
             if (!exists) {
                 requests.unshift(req);

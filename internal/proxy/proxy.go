@@ -2,6 +2,7 @@
 package proxy
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"log"
@@ -20,20 +21,37 @@ import (
 	"github.com/zymawy/hz/pkg/types"
 )
 
-// responseCapture wraps ResponseWriter to capture status code
+// Maximum body size to capture (64KB)
+const maxBodyCapture = 64 * 1024
+
+// responseCapture wraps ResponseWriter to capture status code, headers, and body
 type responseCapture struct {
 	http.ResponseWriter
 	statusCode int
+	body       bytes.Buffer
+	headers    http.Header
 }
 
 func (rc *responseCapture) WriteHeader(code int) {
 	rc.statusCode = code
+	// Capture response headers
+	rc.headers = rc.ResponseWriter.Header().Clone()
 	rc.ResponseWriter.WriteHeader(code)
 }
 
 func (rc *responseCapture) Write(b []byte) (int, error) {
 	if rc.statusCode == 0 {
 		rc.statusCode = http.StatusOK
+		rc.headers = rc.ResponseWriter.Header().Clone()
+	}
+	// Capture body up to limit
+	if rc.body.Len() < maxBodyCapture {
+		remaining := maxBodyCapture - rc.body.Len()
+		if len(b) <= remaining {
+			rc.body.Write(b)
+		} else {
+			rc.body.Write(b[:remaining])
+		}
 	}
 	return rc.ResponseWriter.Write(b)
 }
@@ -107,16 +125,27 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Capture request body if inspector is enabled (read and replace)
+	var requestBody string
+	if p.inspector != nil && r.Body != nil && r.ContentLength > 0 && r.ContentLength <= maxBodyCapture {
+		bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, maxBodyCapture))
+		if err == nil {
+			requestBody = string(bodyBytes)
+			// Replace the body so the proxy can still read it
+			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		}
+	}
+
 	// Route the request
 	route, err := p.router.Match(r)
 	if err != nil {
-		p.captureRequest(r, nil, 0, time.Since(start), err)
+		p.captureRequest(r, nil, nil, requestBody, time.Since(start), err)
 		p.errorHandler(w, r, err)
 		return
 	}
 
 	if route == nil {
-		p.captureRequest(r, nil, 0, time.Since(start), fmt.Errorf("no matching route found"))
+		p.captureRequest(r, nil, nil, requestBody, time.Since(start), fmt.Errorf("no matching route found"))
 		p.errorHandler(w, r, fmt.Errorf("no matching route found"))
 		return
 	}
@@ -130,18 +159,18 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Apply URL rewriting if configured
 	router.RewriteURL(r, route.Service.Rewrite)
 
-	// Wrap response writer to capture status code
+	// Wrap response writer to capture status code, headers, and body
 	rc := &responseCapture{ResponseWriter: w}
 
 	// Proxy the request
 	p.reverseProxy.ServeHTTP(rc, r)
 
 	// Capture the request for inspector
-	p.captureRequest(r, route, rc.statusCode, time.Since(start), nil)
+	p.captureRequest(r, route, rc, requestBody, time.Since(start), nil)
 }
 
 // captureRequest sends request info to the inspector if enabled
-func (p *Proxy) captureRequest(r *http.Request, route *types.Route, statusCode int, duration time.Duration, err error) {
+func (p *Proxy) captureRequest(r *http.Request, route *types.Route, rc *responseCapture, requestBody string, duration time.Duration, err error) {
 	if p.inspector == nil {
 		return
 	}
@@ -155,8 +184,26 @@ func (p *Proxy) captureRequest(r *http.Request, route *types.Route, statusCode i
 		Query:         r.URL.RawQuery,
 		ContentLength: r.ContentLength,
 		RemoteAddr:    r.RemoteAddr,
-		StatusCode:    statusCode,
 		Duration:      duration,
+		RequestBody:   requestBody,
+		Scheme:        r.URL.Scheme,
+		ContentType:   r.Header.Get("Content-Type"),
+	}
+
+	// Set scheme if empty
+	if req.Scheme == "" {
+		if r.TLS != nil {
+			req.Scheme = "https"
+		} else {
+			req.Scheme = "http"
+		}
+	}
+
+	// Capture response data if available
+	if rc != nil {
+		req.StatusCode = rc.statusCode
+		req.ResponseBody = rc.body.String()
+		req.ResponseHeaders = rc.headers
 	}
 
 	if route != nil {

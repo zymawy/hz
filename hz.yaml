@@ -10,17 +10,15 @@ tunnel:
     authtoken: ""
     region: us
 services:
-    - name: backend
-      target: http://localhost:3001
-      health:
-        path: /health
-        interval: 30s
-        timeout: 5s
-    - name: waorders
-      target: http://localhost:3333
-      default: true
     - name: sabry
       target: http://localhost:3008
+    - name: backend
+      target: http://localhost:3001
+      default: true
+    - name: waorders
+      target: http://localhost:3333
+      routes:
+        - path: /api/v1/*
 logging:
     level: info
     format: text
