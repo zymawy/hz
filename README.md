@@ -1,6 +1,27 @@
-# hz - Smart Development Proxy
+<p align="center">
+  <img src="hz.png" alt="Hz - Smart Development Proxy" width="600" />
+</p>
 
-A sophisticated development proxy that routes traffic from multiple local services through a single endpoint with integrated ngrok tunnel support.
+<p align="center">
+  <strong>A sophisticated development proxy that routes traffic from multiple local services through a single endpoint with integrated ngrok tunnel support.</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/zymawy/hz/releases"><img src="https://img.shields.io/github/v/release/zymawy/hz?style=flat-square" alt="Release"></a>
+  <a href="https://github.com/zymawy/hz/blob/main/LICENSE"><img src="https://img.shields.io/github/license/zymawy/hz?style=flat-square" alt="License"></a>
+  <a href="https://github.com/zymawy/hz/actions"><img src="https://img.shields.io/github/actions/workflow/status/zymawy/hz/ci.yml?style=flat-square" alt="Build Status"></a>
+  <a href="https://goreportcard.com/report/github.com/zymawy/hz"><img src="https://goreportcard.com/badge/github.com/zymawy/hz?style=flat-square" alt="Go Report Card"></a>
+</p>
+
+<p align="center">
+  <a href="#features">Features</a> •
+  <a href="#installation">Installation</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#capabilities--examples">Examples</a> •
+  <a href="#configuration-reference">Configuration</a>
+</p>
+
+---
 
 ## Features
 
