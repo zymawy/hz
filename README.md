@@ -37,8 +37,13 @@
 ### Homebrew (macOS & Linux)
 
 ```bash
+brew install zymawy/hz/hz
+```
+
+Or with explicit tap:
+```bash
 brew tap zymawy/hz
-brew install hz
+brew install zymawy/hz/hz
 ```
 
 ### Using Go Install
