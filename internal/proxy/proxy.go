@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
