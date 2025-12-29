@@ -19,6 +19,10 @@ services:
       target: http://localhost:3333
       routes:
         - path: /api/v1/*
+    - name: sabry-service
+      target: http://localhost:3008
+      routes:
+        - header: b-service=sabry
 logging:
     level: info
     format: text
