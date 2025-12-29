@@ -27,3 +27,4 @@ Thumbs.db
 
 # Local config (if sensitive)
 # hz.yaml
+.playwright-mcp/

@@ -34,6 +34,19 @@
 
 ## Installation
 
+### Homebrew (macOS & Linux)
+
+```bash
+brew tap zymawy/hz
+brew install hz
+```
+
+### Using Go Install
+
+```bash
+go install github.com/zymawy/hz@latest
+```
+
 ### From Source
 
 ```bash
@@ -42,11 +55,9 @@ cd hz
 go build -o hz .
 ```
 
-### Using Go Install
+### Download Binary
 
-```bash
-go install github.com/zymawy/hz@latest
-```
+Download the latest release from the [releases page](https://github.com/zymawy/hz/releases).
 
 ## Quick Start
 

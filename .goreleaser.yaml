@@ -1,0 +1,70 @@
+# GoReleaser configuration for hz
+# https://goreleaser.com
+
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: hz
+    main: ./main.go
+    binary: hz
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+
+archives:
+  - id: hz
+    format: tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+    format_overrides:
+      - goos: windows
+        format: zip
+
+checksum:
+  name_template: 'checksums.txt'
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+
+brews:
+  - name: hz
+    repository:
+      owner: zymawy
+      name: homebrew-hz
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/zymawy/hz"
+    description: "A sophisticated development proxy that routes traffic from multiple local services through a single endpoint with integrated ngrok tunnel support"
+    license: "MIT"
+    install: |
+      bin.install "hz"
+    test: |
+      system "#{bin}/hz", "--help"
+
+release:
+  github:
+    owner: zymawy
+    name: hz
+  draft: false
+  prerelease: auto
