@@ -87,12 +87,12 @@ func (r *Router) buildRoute(svc *types.Service, cfg types.RouteConfig) *types.Ro
 
 	// Header matcher
 	if cfg.Header != "" {
-		parts := strings.SplitN(cfg.Header, ":", 2)
+		parts := strings.SplitN(cfg.Header, "=", 2)
 		if len(parts) == 2 {
 			headerName := strings.TrimSpace(parts[0])
 			headerValue := strings.TrimSpace(parts[1])
 			matchers = append(matchers, func(req *http.Request) bool {
-				return req.Header.Get(headerName) == headerValue
+				return strings.EqualFold(req.Header.Get(headerName), headerValue)
 			})
 		}
 	}
