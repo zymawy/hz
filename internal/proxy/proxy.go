@@ -67,7 +67,6 @@ type Proxy struct {
 	wsUpgrader   websocket.Upgrader
 	errorHandler ErrorHandler
 	stats        *types.ProxyStats
-	statsMu      sync.RWMutex
 	logger       *log.Logger
 	inspector    *inspector.Inspector
 }

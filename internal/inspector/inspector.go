@@ -135,9 +135,11 @@ func (i *Inspector) Stop() {
 // handleUI serves the web interface
 func (i *Inspector) handleUI(w http.ResponseWriter, r *http.Request) {
 	tmpl := template.Must(template.New("inspector").Parse(inspectorHTML))
-	tmpl.Execute(w, map[string]interface{}{
+	if err := tmpl.Execute(w, map[string]interface{}{
 		"Port": i.port,
-	})
+	}); err != nil {
+		http.Error(w, "Template error", http.StatusInternalServerError)
+	}
 }
 
 // handleRequests returns captured requests as JSON
@@ -146,7 +148,7 @@ func (i *Inspector) handleRequests(w http.ResponseWriter, r *http.Request) {
 	defer i.mu.RUnlock()
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(i.requests)
+	_ = json.NewEncoder(w).Encode(i.requests)
 }
 
 // handleSSE provides server-sent events for live updates
@@ -209,7 +211,7 @@ func (i *Inspector) handleClear(w http.ResponseWriter, r *http.Request) {
 	i.mu.Unlock()
 
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"cleared"}`))
+	_, _ = w.Write([]byte(`{"status":"cleared"}`))
 }
 
 // handleRequestDetail returns a single request by ID
@@ -227,7 +229,7 @@ func (i *Inspector) handleRequestDetail(w http.ResponseWriter, r *http.Request) 
 	for _, req := range i.requests {
 		if req.ID == id {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(req)
+			_ = json.NewEncoder(w).Encode(req)
 			return
 		}
 	}

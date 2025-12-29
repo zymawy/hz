@@ -120,12 +120,12 @@ func runStart(cmd *cobra.Command, args []string) error {
 			fmt.Println("🔄 Reloading configuration...")
 			// Re-register services
 			for _, svc := range newCfg.Services {
-				reg.Register(svc)
+				_ = reg.Register(svc)
 			}
 			// Rebuild routes
-			rtr.Build(newCfg.Services)
+			_ = rtr.Build(newCfg.Services)
 		})
-		cfgManager.Watch()
+		_ = cfgManager.Watch()
 	}
 
 	// Create HTTP server
@@ -204,11 +204,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 		insp.Stop()
 	}
 	if tunnelManager != nil {
-		tunnelManager.Stop()
+		_ = tunnelManager.Stop()
 	}
 	cfgManager.Stop()
 	reg.Stop()
-	server.Shutdown(shutdownCtx)
+	_ = server.Shutdown(shutdownCtx)
 
 	fmt.Println("👋 Goodbye!")
 	return nil
